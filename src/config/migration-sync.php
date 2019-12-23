@@ -7,8 +7,8 @@ return [
         "username" => env('DB_USERNAME'),
         "password" => env('DB_PASSWORD'),
     ],
-    'outputFolder' => 'database/migrations/',
-
+    'outputFolder'          => 'database/migrations/',
+    'onlyIncludeTables'     => [],
     'excludeTables'         => [
         'migrations', 'telescope_entries', 'telescope_entries_tags', 'telescope_monitoring', 'likes',
     ],
@@ -27,12 +27,26 @@ return [
         'varchar'   => 'string',
     ],
     'filterFieldTypeParams' => [
-        'integer'       => function ($x) { return []; },
-        'tinyInteger'   => function ($x) { return []; },
-        'smallInteger'  => function ($x) { return []; },
-        'mediumInteger' => function ($x) { return []; },
-        'bigInteger'    => function ($x) { return []; },
-        'increments'    => function ($x) { return []; },
-        'bigIncrements' => function ($x) { return []; },
+        'integer'       => function ($x) {
+            return [];
+        },
+        'tinyInteger'   => function ($x) {
+            return [];
+        },
+        'smallInteger'  => function ($x) {
+            return [];
+        },
+        'mediumInteger' => function ($x) {
+            return [];
+        },
+        'bigInteger'    => function ($x) {
+            return [];
+        },
+        'increments'    => function ($x) {
+            return [];
+        },
+        'bigIncrements' => function ($x) {
+            return [];
+        },
     ],
 ];

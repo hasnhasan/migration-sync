@@ -38,10 +38,11 @@ class MigrationSync extends Command
     {
         parent::__construct();
         // Set Config
-        $this->excludeTables     = config('migration-sync.excludeTables');
-        $this->excludeFields     = config('migration-sync.excludeFields');
-        $this->onlyIncludeTables = config('migration-sync.onlyIncludeTables');
-        $this->outputFolder      = config('migration-sync.outputFolder');
+        $this->excludeTables     = config('migration-sync.excludeTables', []);
+        $this->excludeFields     = config('migration-sync.excludeFields', []);
+        $this->onlyIncludeTables = config('migration-sync.onlyIncludeTables', []);
+        $this->outputFolder      = config('migration-sync.outputFolder', 'database/migrations/');
+
     }
 
     /**
@@ -171,11 +172,11 @@ class MigrationSync extends Command
             });
         }
 
-        $fieldTypeNameMappings = config('migration-sync.fieldTypeNameMappings');
-        $nullableFieldTypes    = config('migration-sync.nullableFieldTypes');
-        $filterFieldTypeParams = config('migration-sync.filterFieldTypeParams');
-        $filterFieldTypeParams = config('migration-sync.filterFieldTypeParams');
-        $arrayFieldsTypes      = ['enum'];
+        $fieldTypeNameMappings = config('migration-sync.fieldTypeNameMappings', []);
+        $nullableFieldTypes    = config('migration-sync.nullableFieldTypes', []);
+        $filterFieldTypeParams = config('migration-sync.filterFieldTypeParams', []);
+        $filterFieldTypeParams = config('migration-sync.filterFieldTypeParams', []);
+        $arrayFieldsTypes      = config('migration-sync.arrayFieldsTypes', []);
 
         $response = [];
         $sql      = [];
@@ -303,14 +304,14 @@ AND `tb1`.`REFERENCED_TABLE_NAME` IS NOT NULL");
 
             foreach ($foreigners as $row) {
 
-                $tableSchemaCodes[$row->CONSTRAINT_NAME]     = '    $table->foreign("'.$row->COLUMN_NAME.'","'.$row->CONSTRAINT_NAME.'")
+                $tableSchemaCodes[$row->CONSTRAINT_NAME] = '    $table->foreign("'.$row->COLUMN_NAME.'","'.$row->CONSTRAINT_NAME.'")
                 ->references("'.$row->REFERENCED_COLUMN_NAME.'")
                 ->on("'.$row->REFERENCED_TABLE_NAME.'")
                 ->onDelete("'.$row->DELETE_RULE.'")
                 ->onUpdate("'.$row->UPDATE_RULE.'");
                 
                 ';
-                $tableDropSchemaCodes[] = '    $table->dropForeign("'.$row->CONSTRAINT_NAME.'");';
+                $tableDropSchemaCodes[]                  = '    $table->dropForeign("'.$row->CONSTRAINT_NAME.'");';
                 if (!isset($this->tableOrders[$connectionName][$row->REFERENCED_TABLE_NAME])) {
                     $this->tableOrders[$connectionName][$row->REFERENCED_TABLE_NAME] = [];
                 }
