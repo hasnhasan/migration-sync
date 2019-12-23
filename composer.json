@@ -1,0 +1,32 @@
+{
+  "name": "hasnhasan/migration-sync",
+  "description": "Migration Database SYNC",
+  "homepage": "https://github.com/hasnhasan/migration-sync",
+  "keywords": [
+    "migration",
+    "laravel",
+    "database",
+    "sync"
+  ],
+  "authors": [
+    {
+      "name": "Hasan Özsezgin",
+      "email": "hasan.ozsezgin@gmail.com"
+    }
+  ],
+  "require": {
+    "php": ">=7.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "HasnHasan\\MigrationSync\\": "src/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "HasnHasan\\MigrationSync\\SyncServiceProvider"
+      ]
+    }
+  }
+}
