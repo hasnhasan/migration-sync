@@ -25,6 +25,7 @@ class MigrationSync extends Command
      */
     protected $description = 'Migration Database SYNC';
     protected $debug = false;
+    protected $sqlDump = [];
     protected $excludeTables = [];
     protected $excludeFields = [];
     protected $onlyIncludeTables = [];
@@ -78,10 +79,14 @@ class MigrationSync extends Command
         // Get Default DB
         $migrationLiveDatas = $this->generateMigration($defaultConnection);
 
-        $diffDatas = [];
-
+        $diffDatas    = [];
+        $foreingDatas = [];
         if (!$migrationLiveDatas) {
             foreach ($migrationNowDatas as $table => $datas) {
+                if ($table == '#foreigners#') {
+                    $foreingDatas = $datas;
+                    continue;
+                }
                 [$createData, $dropData] = $migrationNowDatas[$table];
                 $create = collect($createData)->toArray();
                 $drop   = collect($dropData)->toArray();
@@ -89,11 +94,18 @@ class MigrationSync extends Command
                 $diffData                    = [$create, $drop];
                 $diffDatas[$table]['create'] = $diffData;
             }
-            $order = $this->tableCreateSort(array_keys($migrationNowDatas), $this->tableOrders[$syncDb]);
+            $tableOrder = isset($this->tableOrders[$syncDb]) ? $this->tableOrders[$syncDb] : [];
+            $order = $this->tableCreateSort(array_keys($migrationNowDatas), $tableOrder);
 
         } else {
 
             foreach ($migrationLiveDatas as $table => $datas) {
+
+                if ($table == '#foreigners#') {
+                    $foreingDatas = $datas;
+                    continue;
+                }
+
                 [$create, $drop] = $datas;
 
                 $type = 'create'; // New Table
@@ -115,7 +127,8 @@ class MigrationSync extends Command
                 }
 
             }
-            $order = $this->tableCreateSort(array_keys($migrationLiveDatas), $this->tableOrders[$defaultConnection]);
+            $tableOrder = isset($this->tableOrders[$defaultConnection]) ? $this->tableOrders[$defaultConnection] : [];
+            $order = $this->tableCreateSort(array_keys($migrationLiveDatas), $tableOrder);
         }
 
         $diffDatas = collect($diffDatas)->sortBy(function ($datas, $table) use ($order) {
@@ -126,12 +139,87 @@ class MigrationSync extends Command
         $i = 100000;
         foreach ($diffDatas as $tableName => $diffData) {
             $type = current(array_keys($diffData));
-            [$tableSchemaCodes, $tableDropSchemaCodes] = current(array_values($diffData));
+            [$up, $down] = current(array_values($diffData));
+            $tableSchemaCode = [
+                'up'   => $up,
+                'down' => $down,
+            ];
 
-            $this->createMigrationFile($type, $tableName, $tableSchemaCodes, $tableDropSchemaCodes, $i);
+            $foreingSchema = [
+                'up'   => '',
+                'down' => '',
+            ];
+
+            if (isset($foreingDatas['up'][$tableName])) {
+                $foreingSchema = [
+                    'up'   => $foreingDatas['up'][$tableName],
+                    'down' => $foreingDatas['down'][$tableName],
+                ];
+            }
+
+            $this->createMigrationFile($type, $tableName, $tableSchemaCode, $foreingSchema, $i);
             $i++;
         }
 
+    }
+
+    /**
+     * @param $type
+     * @param $tableName
+     * @param $tableSchemaCode
+     * @param $foreingSchema
+     * @param  int  $i
+     */
+    private function createMigrationFile($type, $tableName, $tableSchemaCode, $foreingSchema, $i = 10000)
+    {
+        // Table
+        $upSchema     = implode("\n        ", $tableSchemaCode['up']);
+        $upSchemaCode = "  Schema::$type('$tableName', function (Blueprint \$table) {
+            $upSchema
+          });";
+
+        $downSchema = implode("\n        ", $tableSchemaCode['down']);
+        if ($type == 'create') {
+            $downSchemaCode = "  Schema::dropIfExists('$tableName');";
+        } else {
+            $downSchemaCode = "  Schema::$type('$tableName', function (Blueprint \$table) {
+            $downSchema
+          });";
+        }
+
+        // Foreing
+        $upForeingSchema   = '';
+        $downForeingSchema = '';
+
+        /*if (isset($foreingSchema['up']) && $foreingSchema['up']) {
+            $upForeingCode   = implode("\n        ", $foreingSchema['up']);
+            $upForeingSchema = "  Schema::table('$tableName', function (Blueprint \$table) {
+            $upForeingCode
+          });";
+        }
+
+
+        if (isset($foreingSchema['down']) && $foreingSchema['down']) {
+            $downForeingCode   = implode("\n        ", $foreingSchema['down']);
+            $downForeingSchema = "  Schema::table('$tableName', function (Blueprint \$table) {
+            $downForeingCode
+          });";
+        }*/
+
+        //Class Name
+        $name      = str_replace(' ', '', str_replace('_', ' ', Str::title($tableName)));
+        $className = sprintf("%s%sTable", ucfirst($type), $name);
+
+        $template = [
+            '{{className}}'         => $className,
+            '{{upSchema}}'          => $upSchemaCode,
+            '{{upForeingSchema}}'   => $upForeingSchema,
+            '{{downSchema}}'        => $downSchemaCode,
+            '{{downForeingSchema}}' => $downForeingSchema,
+        ];
+
+        $outputFileName = $this->setStub($tableName, $type, $template, $i);
+        $this->info("File: $outputFileName");
     }
 
     /**
@@ -178,8 +266,10 @@ class MigrationSync extends Command
         $filterFieldTypeParams = config('migration-sync.filterFieldTypeParams', []);
         $arrayFieldsTypes      = config('migration-sync.arrayFieldsTypes', []);
 
-        $response = [];
-        $sql      = [];
+        $response            = [];
+        $sql                 = [];
+        $foreignersUpCodes   = [];
+        $foreignersDownCodes = [];
         foreach ($tableNames as $tableName) {
 
             $fullColumns          = DB::connection($connectionName)->select("SHOW FULL COLUMNS FROM `$tableName`");
@@ -187,7 +277,6 @@ class MigrationSync extends Command
             $tableSchemaCodes     = [];
             $fields               = [];
             if ($fullColumns) {
-
                 // Get Fields
                 foreach ($fullColumns as $column) {
                     $field      = $column->Field;
@@ -253,7 +342,7 @@ class MigrationSync extends Command
 
                     $appends         = implode("", $appends);
                     $tableSchemaCode = sprintf("    \$table->%s(%s)%s;", $fieldTypeName, $migrationParams, $appends);
-                    $this->debug and $tableSchemaCodes [] = "// ".json_encode($column);
+                    $this->debug and $tableSchemaCodes[] = "// ".json_encode($column);
                     $tableSchemaCodes[]     = $tableSchemaCode;
                     $tableDropSchemaCodes[] = sprintf("    \$table->dropColumn('%s');", $field);
                 };
@@ -261,18 +350,17 @@ class MigrationSync extends Command
 
             // timestamps control
             if (in_array('created_at', $fields) && in_array('updated_at', $fields)) {
-                $tableSchemaCodes [] = ('    $table->timestamps();');
+                $tableSchemaCodes[] = '    $table->timestamps();';
             } else {
                 if (in_array('created_at', $fields)) {
-                    $tableSchemaCodes [] = ('    $table->timestamp("created_at");');
+                    $tableSchemaCodes[] = '    $table->timestamp("created_at");';
                 }
                 if (in_array('updated_at', $fields)) {
-                    $tableSchemaCodes [] = ('    $table->timestamp("updated_at");');
+                    $tableSchemaCodes[] = '    $table->timestamp("updated_at");';
                 }
             }
-
             if (in_array('deleted_at', $fields)) {
-                $tableSchemaCodes [] = ('    $table->softDeletes();');
+                $tableSchemaCodes[] = '    $table->softDeletes();';
             }
 
             // Get indexes
@@ -288,19 +376,13 @@ class MigrationSync extends Command
                 $tableSchemaCodes[] = PHP_EOL;
                 foreach ($indexes as $indexName => $index) {
                     $tableSchemaCodes[] = '    $table->'.($index['is_unique'] ? 'unique' : 'index').'(["'.implode('", "',
-                            $index['keys']).'"]);';
+                            $index['keys']).'"],"'.$indexName.'");';
                 }
                 $tableSchemaCodes[] = PHP_EOL;
             }
 
             // Get foreign
-            $foreigners = DB::connection($connectionName)->select("
-SELECT tb1.CONSTRAINT_NAME,tb1.COLUMN_NAME,tb1.REFERENCED_TABLE_NAME,tb1.REFERENCED_COLUMN_NAME,tb2.UPDATE_RULE,tb2.DELETE_RULE
-FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE as tb1
-INNER JOIN information_schema.REFERENTIAL_CONSTRAINTS AS tb2 ON tb1.CONSTRAINT_NAME = tb2.CONSTRAINT_NAME
-WHERE `tb1`.`TABLE_SCHEMA` = '$database' 
-AND `tb1`.`TABLE_NAME` = '$tableName' 
-AND `tb1`.`REFERENCED_TABLE_NAME` IS NOT NULL");
+            $foreigners = DB::connection($connectionName)->select("SELECT tb1.CONSTRAINT_NAME,tb1.COLUMN_NAME,tb1.REFERENCED_TABLE_NAME,tb1.REFERENCED_COLUMN_NAME,tb2.UPDATE_RULE,tb2.DELETE_RULE FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE as tb1 INNER JOIN information_schema.REFERENTIAL_CONSTRAINTS AS tb2 ON tb1.CONSTRAINT_NAME = tb2.CONSTRAINT_NAME WHERE `tb1`.`TABLE_SCHEMA` = '$database'  AND `tb1`.`TABLE_NAME` = '$tableName'  AND `tb1`.`REFERENCED_TABLE_NAME` IS NOT NULL");
 
             foreach ($foreigners as $row) {
 
@@ -316,87 +398,38 @@ AND `tb1`.`REFERENCED_TABLE_NAME` IS NOT NULL");
                     $this->tableOrders[$connectionName][$row->REFERENCED_TABLE_NAME] = [];
                 }
                 $this->tableOrders[$connectionName][$row->REFERENCED_TABLE_NAME][$tableName] = 1;
+
+                /*$foreignersUpCodes[$tableName][$row->CONSTRAINT_NAME] = '$table->foreign("'.$row->COLUMN_NAME.'","'.$row->CONSTRAINT_NAME.'")
+                ->references("'.$row->REFERENCED_COLUMN_NAME.'")->on("'.$row->REFERENCED_TABLE_NAME.'")
+                ->onDelete("'.$row->DELETE_RULE.'")
+                ->onUpdate("'.$row->UPDATE_RULE.'");
+                ';
+
+                $foreignersDownCodes[$tableName][$row->CONSTRAINT_NAME] = '    $table->dropForeign("'.$row->CONSTRAINT_NAME.'");';*/
+
             }
 
             // Debug Create Sql
-            $results = DB::connection($connectionName)->select("SHOW CREATE TABLE `$tableName`");
-            $sqlTmp  = [];
-            foreach ($results as $row) {
-                $sqlTmp[] = $row->{'Create Table'};
+            if ($this->debug) {
+                $results = DB::connection($connectionName)->select("SHOW CREATE TABLE `$tableName`");
+                $sqlTmp  = [];
+                foreach ($results as $row) {
+                    $sqlTmp[] = $row->{'Create Table'};
+                }
+                $sql[$tableName] = implode('\n', $sqlTmp);
             }
-            $sql[$tableName] = implode('\n', $sqlTmp);
 
             $response[$tableName] = [$tableSchemaCodes, $tableDropSchemaCodes];
         }
 
+        $this->sqlDump = $sql;
+
+        $response['#foreigners#'] = [
+            'up'   => $foreignersUpCodes,
+            'down' => $foreignersDownCodes,
+        ];
+
         return $response;
-    }
-
-    /**
-     * @param $type
-     * @param $tableName
-     * @param $tableSchemaCodes
-     * @param $tableDropSchemaCodes
-     * @param  string  $sql
-     */
-    private function createMigrationFile(
-        $type,
-        $tableName,
-        $tableSchemaCodes,
-        $tableDropSchemaCodes,
-        $i = 10000,
-        $sql = ''
-    ) {
-
-        $classname = sprintf("%s%sTable",
-            ucfirst($type), str_replace(' ', '', str_replace('_', ' ', Str::title($tableName))));
-
-        $tableSchemaCodes = implode("\n        ", $tableSchemaCodes);
-        if ($type == 'create') {
-            $tableDropSchemaCodes = "  Schema::dropIfExists('$tableName');";
-        } else {
-
-            $tableDropSchemaCode  = implode("\n        ", $tableDropSchemaCodes);
-            $tableDropSchemaCodes = "  Schema::$type('$tableName', function (Blueprint \$table) {
-            $tableDropSchemaCode
-          });";
-        }
-
-        $code           = "
-<?php
-use Illuminate\Support\Facades\Schema;
-use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Database\Migrations\Migration;
-class $classname extends Migration
-{
-    /**
-     * Run the migrations.
-     * @return void
-     */
-    public function up()
-    {
-        Schema::$type('$tableName', function (Blueprint \$table) {
-        $tableSchemaCodes
-        });
-    }
-    
-    
-    /**
-     * Reverse the migrations.
-     *
-     * @return void
-     */
-    public function down()
-    {
-        $tableDropSchemaCodes
-    }
-}
-";
-        $outputFileName = sprintf("%s/%s_".$type."_%s_table.php", $this->outputFolder, date('Y_m_d_'.$i),
-            $tableName);
-        File::isDirectory($this->outputFolder) or File::makeDirectory($this->outputFolder);
-        File::put($outputFileName, $code);
-        $this->info("File: $outputFileName");
     }
 
     /**
@@ -442,5 +475,34 @@ class $classname extends Migration
         arsort($order);
 
         return array_keys($order);
+    }
+
+    /**
+     * @param $type
+     * @return false|string
+     */
+    protected function getStub($type = 'Migration')
+    {
+
+        $path = __DIR__."/../../Stubs/$type.stub";
+
+        return File::get($path);
+    }
+
+    /**
+     * @param $tableName
+     * @param $type
+     * @param $template
+     * @param $i
+     */
+    protected function setStub($tableName, $type, $template, $i)
+    {
+        $code = str_replace(array_keys($template), array_values($template), $this->getStub());
+
+        $fileName = sprintf("%s/%s_".$type."_%s_table.php", $this->outputFolder, date('Y_m_d_'.$i), $tableName);
+        File::isDirectory($this->outputFolder) or File::makeDirectory($this->outputFolder);
+        File::put($fileName, $code);
+
+        return $fileName;
     }
 }
